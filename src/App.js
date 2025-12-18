@@ -65,6 +65,11 @@ function App() {
     totalTHD: 2.5 // Initialize with calculated THD percentage
   });
   
+  // State to track data updates
+  const [lastDataUpdate, setLastDataUpdate] = useState(Date.now());
+  const [isDataUpdating, setIsDataUpdating] = useState(true);
+  const [previousData, setPreviousData] = useState(null);
+  
   const [mlPredictions, setMlPredictions] = useState({
     compensationLevel: 85.7,
     responseDelay: 12.3,
@@ -139,11 +144,30 @@ function App() {
           dc_voltage: 0,
           frequency: frequency
         };
-        setLiveData(prev => ({...prev, ...mappedData}));
-        updateSineWaveData(mappedData);
-        updateHarmonicData(mappedData);
-        updateMlPredictions(mappedData);
-        checkAlerts(mappedData);
+        
+        // Check if data has actually changed
+        const hasDataChanged = !previousData || 
+          previousData.I !== mappedData.I ||
+          previousData.V !== mappedData.V ||
+          previousData.W !== mappedData.W ||
+          previousData.P !== mappedData.P ||
+          previousData.Relay !== mappedData.Relay ||
+          previousData.Choke !== mappedData.Choke;
+        
+        if (hasDataChanged) {
+          setIsDataUpdating(true);
+          setLastDataUpdate(Date.now());
+          setPreviousData(mappedData);
+          
+          setLiveData(prev => ({...prev, ...mappedData}));
+          updateSineWaveData(mappedData);
+          updateHarmonicData(mappedData);
+          updateMlPredictions(mappedData);
+          checkAlerts(mappedData);
+        } else {
+          // Data not changing, just update timestamp but don't trigger analysis
+          setLiveData(prev => ({...prev, ts: Date.now()}));
+        }
       }
     });
     
@@ -174,9 +198,20 @@ function App() {
       }
     });
 
-    // Simulate real-time harmonic updates every 2 seconds
+    // Monitor for data update activity
+    const updateCheckInterval = setInterval(() => {
+      const timeSinceLastUpdate = Date.now() - lastDataUpdate;
+      // If no update in last 5 seconds, consider data as stopped
+      if (timeSinceLastUpdate > 5000) {
+        setIsDataUpdating(false);
+      }
+    }, 1000);
+    
+    // Simulate real-time harmonic updates every 2 seconds - only if data is updating
     const harmonicInterval = setInterval(() => {
-      simulateHarmonicChanges();
+      if (isDataUpdating) {
+        simulateHarmonicChanges();
+      }
     }, 2000);
 
     return () => {
@@ -184,9 +219,10 @@ function App() {
       unsubscribeDc();
       unsubscribeHistory();
       clearInterval(harmonicInterval);
+      clearInterval(updateCheckInterval);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [lastDataUpdate, isDataUpdating]);
 
   const updateSineWaveData = (data) => {
     const time = new Date().toLocaleTimeString();
@@ -225,6 +261,11 @@ function App() {
   };
 
   const updateHarmonicData = (data) => {
+    // Only update if data is actively changing
+    if (!isDataUpdating) {
+      return; // Keep last harmonic data
+    }
+    
     // Simulate harmonic analysis based on live data
     const baseAmplitude = data.I || 0.5;
     const choke = data.Choke || "0";
@@ -276,6 +317,11 @@ function App() {
   };
 
   const updateThdHistoryWithValue = (currentTHD) => {
+    // Only add new THD history entries when data is actively updating
+    if (!isDataUpdating) {
+      return; // Keep last THD data
+    }
+    
     const time = new Date().toLocaleTimeString();
     
     setThdHistory(prev => {
@@ -338,6 +384,11 @@ function App() {
   };
 
   const simulateHarmonicChanges = () => {
+    // Only simulate changes if data is actively updating
+    if (!isDataUpdating) {
+      return; // Keep last harmonic data
+    }
+    
     const choke = liveData.Choke || "0";
     
     // Generate THD based on choke status
@@ -579,6 +630,9 @@ function App() {
           <div className="thd-indicator">
             <span className={`thd-badge ${harmonicData.totalTHD > 5 ? 'high' : 'normal'}`}>
               THD: {harmonicData.totalTHD.toFixed(2)}%
+            </span>
+            <span className={`update-status ${isDataUpdating ? 'updating' : 'stopped'}`}>
+              {isDataUpdating ? '🔄 Updating' : '⏸️ Stopped (Last Data)'}
             </span>
           </div>
         </div>
