@@ -95,24 +95,29 @@ function App() {
   useEffect(() => {
     // Listen for live data changes
     const liveDataRef = ref(database, '2_AC_Power_Facter/1_AC_Power_Choke');
+    let pfTimeout = null;
     const unsubscribeLive = onValue(liveDataRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
         // Apply control logic
+        // Only change current (I) when voltage changes
         let updatedI = data.I || 0;
+        if (
+          data.V !== undefined && data.V !== null &&
+          (!previousData || previousData.V !== data.V)
+        ) {
+          updatedI = (Math.random() * 0.4 + 1.1); // 1.1 to 1.5
+        } else if (previousData) {
+          updatedI = previousData.I;
+        }
         let updatedRelay = data.Relay || 0;
         const voltage = data.V || 0;
         const choke = data.Choke || "0";
         let needsUpdate = false;
         const updates = {};
-        
-        // If voltage > 200, set current to 1.5A
-        if (voltage > 200 && updatedI !== 1.5) {
-          updatedI = 1.5;
-          updates.I = 1.5;
-          needsUpdate = true;
-        }
-        
+
+        // No forced current value; let it vary naturally with voltage/data
+
         // If choke is 1, relay should be 1; if choke is 0, relay should be 0
         const chokeValue = (choke === "1" || choke === 1) ? 1 : 0;
         if (updatedRelay !== chokeValue) {
@@ -120,23 +125,39 @@ function App() {
           updates.Relay = chokeValue;
           needsUpdate = true;
         }
-        
+
+        // Power Factor logic
+        let newP = data.P || 0;
+        if (updatedRelay === 0) {
+          newP = 0.8;
+        } else if (choke === "1" || choke === 1) {
+          // When choke is 1, set to 0.7, then after 3s set to 0.9
+          newP = 0.7;
+          if (pfTimeout) clearTimeout(pfTimeout);
+          pfTimeout = setTimeout(() => {
+            setLiveData(prev => ({ ...prev, P: 0.9 }));
+          }, 3000);
+        } else {
+          // If relay is on but choke is not 1, keep as is or default
+          newP = data.P || 0.8;
+        }
+
         // Update Firebase if needed
         if (needsUpdate) {
           update(liveDataRef, updates).catch(error => {
             console.error("Error updating Firebase:", error);
           });
         }
-        
+
         // Calculate frequency (50Hz base with slight variation)
         const frequency = 50 + (Math.random() - 0.5) * 0.2;
-        
-        // Map Firebase fields directly
+
+        // Map Firebase fields directly, but override P with newP
         const mappedData = {
           I: updatedI,
           V: voltage,
           W: data.W || 0,
-          P: data.P || 0,
+          P: newP,
           Relay: updatedRelay,
           Choke: choke,
           ts: Date.now(),
@@ -144,7 +165,7 @@ function App() {
           dc_voltage: 0,
           frequency: frequency
         };
-        
+
         // Check if data has actually changed
         const hasDataChanged = !previousData || 
           previousData.I !== mappedData.I ||
@@ -153,12 +174,12 @@ function App() {
           previousData.P !== mappedData.P ||
           previousData.Relay !== mappedData.Relay ||
           previousData.Choke !== mappedData.Choke;
-        
+
         if (hasDataChanged) {
           setIsDataUpdating(true);
           setLastDataUpdate(Date.now());
           setPreviousData(mappedData);
-          
+
           setLiveData(prev => ({...prev, ...mappedData}));
           updateSineWaveData(mappedData);
           updateHarmonicData(mappedData);
@@ -665,7 +686,7 @@ function App() {
               <div className="card-icon">📊</div>
               <div className="card-content">
                 <h3>Power Factor (P)</h3>
-                <div className="card-value">{(liveData.P || 0).toFixed(0)}</div>
+                <div className="card-value">{(liveData.P || 0).toFixed(2)}</div>
                 <div className="card-unit">PF</div>
               </div>
             </div>
